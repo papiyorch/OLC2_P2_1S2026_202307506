@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Golampi Compiler</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header>
+  <h1>⚡ GOLAMPI COMPILER</h1>
+
+  <button class="btn"         onclick="newFile()">Nuevo</button>
+  <button class="btn"         onclick="loadFile()">Cargar archivo</button>
+  <button class="btn success" onclick="saveFile()">Guardar</button>
+  <button class="btn primary" onclick="compileCode()">▶ Compilar</button>
+  <button class="btn danger"  onclick="clearConsole()">Limpiar consola</button>
+
+  <div id="spinner"></div>
+  <span id="error-badge">0 errores</span>
+</header>
+
+<div class="workspace">
+
+  <div class="panel">
+    <div class="panel-title">Editor — Golampi</div>
+    <textarea id="editor" spellcheck="false" placeholder="// Escribe tu código Golampi aquí...
+func main() {
+    var x int32 = 10
+    fmt.Println(x)
+}"></textarea>
+  </div>
+
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-console" onclick="switchTab('console')">Consola ARM64</button>
+      <button class="tab-btn"        id="tab-errors"  onclick="switchTab('errors')">Errores</button>
+      <button class="tab-btn"        id="tab-symbols" onclick="switchTab('symbols')">Tabla de símbolos</button>
+    </div>
+
+    <div class="tab-content active" id="content-console">
+      <div id="console-output"></div>
+    </div>
+
+    <div class="tab-content" id="content-errors">
+      <div class="report-table-wrap">
+        <div id="errors-empty" class="empty-msg">Sin errores detectados.</div>
+        <table class="report" id="errors-table" style="display:none">
+          <thead>
+            <tr><th>#</th><th>Tipo</th><th>Descripción</th><th>Línea</th><th>Columna</th></tr>
+          </thead>
+          <tbody id="errors-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-content" id="content-symbols">
+      <div class="report-table-wrap">
+        <div id="symbols-empty" class="empty-msg">Tabla de símbolos vacía.</div>
+        <table class="report" id="symbols-table" style="display:none">
+          <thead>
+            <tr><th>Identificador</th><th>Tipo</th><th>Ámbito</th><th>Valor/Memoria</th><th>Línea</th><th>Col</th></tr>
+          </thead>
+          <tbody id="symbols-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="reports-bar">
+    <span>Descargar:</span>
+    <button class="btn" id="btn-dl-output"  onclick="downloadOutput()"  disabled>⬇ Código ARM64 (.s)</button>
+    <button class="btn" id="btn-dl-errors"  onclick="downloadErrors()"  disabled>⬇ Errores (.csv)</button>
+    <button class="btn" id="btn-dl-symbols" onclick="downloadSymbols()" disabled>⬇ Tabla de símbolos (.csv)</button>
+  </div>
+
+</div>
+
+<input type="file" id="file-input" accept=".go,.golampi,.txt" style="display:none" onchange="onFileLoaded(event)" />
+
+<script src="app.js"></script>
+</body>
+</html>

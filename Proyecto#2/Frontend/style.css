@@ -1,0 +1,242 @@
+/* ── Reset & base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #1e1e2e;
+  --surface:   #2a2a3d;
+  --border:    #3a3a55;
+  --accent:    #7c6af7;
+  --accent2:   #56c8a0;
+  --danger:    #f38ba8;
+  --text:      #cdd6f4;
+  --muted:     #6c7086;
+  --font-mono: 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 1px;
+  margin-right: auto;
+}
+
+/* ── Toolbar buttons ── */
+.btn {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover              { background: var(--border); }
+.btn.primary            { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover      { filter: brightness(1.15); }
+.btn.danger             { border-color: var(--danger); color: var(--danger); }
+.btn.danger:hover       { background: var(--danger); color: #fff; }
+.btn.success            { border-color: var(--accent2); color: var(--accent2); }
+.btn.success:hover      { background: var(--accent2); color: #1e1e2e; }
+
+/* ── Main layout ── */
+.workspace {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr auto;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* ── Panels ── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.panel-title {
+  background: var(--surface);
+  padding: 0.4rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Editor ── */
+#editor {
+  flex: 1;
+  background: #12121e;
+  color: #e0def4;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  padding: 0.8rem 1rem;
+  border: none;
+  resize: none;
+  outline: none;
+  tab-size: 4;
+}
+
+/* ── Console ── */
+#console-output {
+  flex: 1;
+  background: #0d0d1a;
+  color: #a6e3a1;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 0.8rem 1rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Reports bar ── */
+.reports-bar {
+  grid-column: 1 / -1;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.reports-bar span {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-right: 0.4rem;
+}
+
+/* ── Tabs ── */
+.tab-bar {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  padding: 0.4rem 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover                  { color: var(--text); }
+.tab-btn.active                 { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn.has-errors             { color: var(--danger); }
+.tab-btn.has-errors.active      { border-bottom-color: var(--danger); }
+
+/* ── Tab content ── */
+.tab-content        { display: none; flex: 1; overflow: auto; }
+.tab-content.active { display: flex; flex-direction: column; }
+
+/* ── Tabla de reportes ── */
+.report-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 0.6rem;
+}
+
+table.report {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+table.report th {
+  background: var(--surface);
+  color: var(--muted);
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+table.report td {
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+table.report tr:hover td { background: var(--surface); }
+
+table.report td.type-lex  { color: #fab387; }
+table.report td.type-sint { color: #f9e2af; }
+table.report td.type-sem  { color: var(--danger); }
+
+.empty-msg {
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 1rem;
+  font-style: italic;
+}
+
+/* ── Error badge ── */
+#error-badge {
+  font-size: 0.75rem;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.1rem 0.5rem;
+  display: none;
+}
+
+/* ── Loading spinner ── */
+#spinner {
+  display: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

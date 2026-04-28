@@ -1,0 +1,31 @@
+# ── Dependencias PHP (Composer) ──────────────────
+vendor/
+composer.lock
+
+# ── ANTLR4 — archivos de runtime/intermedios ─────
+Backend/antlr/*.interp
+Backend/antlr/*.tokens
+
+# ── PHP ──────────────────────────────────────────
+*.log
+*.cache
+
+# ── Sistema operativo ─────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDEs y editores ───────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Variables de entorno ─────────────────────────
+.env
+.env.local
+
+# ── Archivos de prueba ─────────────────────
+Proyecto#2/Archivos Entrada/
+

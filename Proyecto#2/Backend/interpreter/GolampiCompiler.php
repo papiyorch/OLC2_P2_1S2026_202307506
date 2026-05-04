@@ -57,37 +57,54 @@ class GolampiCompiler extends GolampiBaseVisitor
     private function getExprType($exprCtx): string 
     {
         if ($exprCtx === null) return 'int32';
-        
-        if (is_array($exprCtx)) {
-            $exprCtx = $exprCtx[0];
-        }
-        
+        if (is_array($exprCtx)) $exprCtx = $exprCtx[0];
         $text = $exprCtx->getText();
         
+        // 1. Funciones Nativas, Strings y Booleanos
+        if (str_contains($text, '"')) return 'string';
         if (str_starts_with($text, 'len(')) return 'int32';
         if (str_starts_with($text, 'substr(')) return 'string';
         if (str_starts_with($text, 'now(')) return 'string';
         if (str_starts_with($text, 'typeOf(')) return 'string';
         
-        if (str_contains($text, '"')) return 'string';
+        if ($text === 'true' || $text === 'false' || str_contains($text, '==') || str_contains($text, '!=') || str_contains($text, '<') || str_contains($text, '>') || str_contains($text, '&&') || str_contains($text, '||') || str_starts_with($text, '!')) return 'bool';
+        
+        // 2. Arreglos literales 
+        if (preg_match('/^(\[\d+\])+(int32|float32|string|bool|rune)/', $text, $matches)) {
+            return $matches[0]; 
+        }
+        
+        // 3. Literales Flotantes
         if (str_contains($text, '.')) return 'float32';
         
+        // 4. Inferencia Dinamica por Tabla de Simbolos
+        $foundType = 'int32';
         preg_match_all('/[a-zA-Z_][a-zA-Z_0-9]*/', $text, $matches);
         if (!empty($matches[0])) {
             foreach ($matches[0] as $word) {
-                // Evitar palabras clave de tipos
                 if (in_array($word, ['int32', 'float32', 'string', 'bool', 'rune'])) continue;
-                
                 try {
                     $sym = $this->currentEnv->getSymbol($word);
-                    if (str_contains($sym['type'], 'float32')) return 'float32';
-                    if (str_contains($sym['type'], 'string')) return 'string';
-                } catch (\Exception $e) {
-                }
+                    $t = $sym['type'];
+                    
+                    $t = ltrim($t, '*'); 
+                    
+                    if (str_contains($t, 'float32')) $foundType = 'float32';
+                    if (str_contains($t, 'string')) $foundType = 'string';
+                    if (str_contains($t, 'bool')) $foundType = 'bool'; 
+                    if (str_contains($t, 'rune')) $foundType = 'rune';
+                    if (str_contains($t, '[')) $foundType = $t; 
+                } catch (\Exception $e) {}
             }
         }
         
-        return 'int32'; // Por defecto
+        if (str_contains($text, '[') || str_contains($text, '+') || str_contains($text, '-') || str_contains($text, '*') || str_contains($text, '/')) {
+            if (!preg_match('/^(\[\d+\])+/', $text)) {
+                $foundType = preg_replace('/\[\d+\]/', '', $foundType);
+            }
+        }
+        
+        return $foundType;
     }
 
     
@@ -119,17 +136,23 @@ class GolampiCompiler extends GolampiBaseVisitor
         $this->output .= "{$label}:\n";
         $this->output .= "    stp x29, x30, [sp, #-16]!   // Guardar Frame Pointer y Link Register \n"; 
         $this->output .= "    mov x29, sp\n";
-        $this->output .= "    sub sp, sp, #256            // Reservar memoria estatica para variables\n\n"; 
+        $this->output .= "    sub sp, sp, #2048            // Reservar memoria estatica para variables\n\n"; 
 
         $params = $funcDecl->paramList() ? $funcDecl->paramList()->parametro() : [];
         foreach ($params as $i => $param) {
             $pName = $param->ID()->getText();
             $pType = $param->type()->getText();
+            
+            if (str_contains($pType, '[') && !str_starts_with($pType, '*')) {
+                $pType = '*' . $pType; 
+            }
+            
             $this->currentEnv->declare($pName, $pType, 8, $line, $col); 
             
             $offset = $this->currentEnv->getSymbol($pName)['offset'];
             if ($i < 8) {
-                $this->output .= "    str x{$i}, [x29, #-{$offset}]  // Guardar param $pName\n";
+                $this->output .= "    sub x9, x29, #{$offset}\n";
+                $this->output .= "    str x{$i}, [x9]             // Guardar param\n";
             }
         }
 
@@ -152,11 +175,22 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
+    // ───────────────────
+    // BLOQUES DE CÓDIGO 
+    // ───────────────────
     public function visitBlock($ctx): mixed
     {
-        foreach ($ctx->statement() as $stmt) {
-            $this->visit($stmt);
+        $prevEnv = $this->currentEnv;
+        $this->currentEnv = $this->currentEnv->createChild("block_" . uniqid());
+
+        if ($ctx->statement()) {
+            foreach ($ctx->statement() as $stmt) {
+                $this->visit($stmt);
+            }
         }
+
+        $this->currentEnv = $prevEnv;
+
         return null;
     }
 
@@ -196,29 +230,32 @@ class GolampiCompiler extends GolampiBaseVisitor
         $type = $sym['type'];
         $baseOffset = $sym['offset'];
 
-        preg_match_all('/\[(\d+)\]/', $type, $matches);
+        $typeClean = str_starts_with($type, '*') ? substr($type, 1) : $type;
+        preg_match_all('/\[(\d+)\]/', $typeClean, $matches);
         $dims = $matches[1];
 
-        if (count($indices) === 1) {
-            $this->visit($indices[0]); 
-        } elseif (count($indices) === 2) {
-            $cols = $dims[1];
-            $this->visit($indices[0]); 
-            $this->output .= "    mov x1, #{$cols}\n";
-            $this->output .= "    mul x0, x0, x1\n";
-            $this->output .= "    str x0, [sp, #-16]!\n";
-            $this->visit($indices[1]); 
-            $this->output .= "    ldr x1, [sp], #16\n";
-            $this->output .= "    add x0, x1, x0\n";
+        $this->visit($indices[0]); 
+        for ($k = 1; $k < count($indices); $k++) {
+            $this->output .= "    str x0, [sp, #-16]!         // PUSH acumulado\n";
+            $dimVal = $dims[$k];
+            $this->output .= "    mov x1, #{$dimVal}\n";
+            $this->output .= "    mul x0, x0, x1              // acumulado *= dimension_actual\n";
+            $this->output .= "    str x0, [sp]                // Update PUSH\n";
+            
+            $this->visit($indices[$k]);                 // x0 = nuevo indice
+            
+            $this->output .= "    ldr x1, [sp], #16           // POP acumulado\n";
+            $this->output .= "    add x0, x1, x0              // x0 = acumulado + nuevo\n";
         }
 
         $this->output .= "    mov x1, #8\n";
         $this->output .= "    mul x0, x0, x1              // x0 = byte offset\n";
 
         if (str_starts_with($type, '*')) {
-            $this->output .= "    ldr x1, [x29, #-{$baseOffset}] // Base = direccion apuntada\n";
+            $this->output .= "    sub x9, x29, #{$baseOffset}\n";
+            $this->output .= "    ldr x1, [x9]                // Cargar la direccion apuntada\n";
         } else {
-            $this->output .= "    sub x1, x29, #{$baseOffset}    // Base = memoria local\n"; 
+            $this->output .= "    sub x1, x29, #{$baseOffset}\n"; 
         }
         
         $this->output .= "    add x1, x1, x0              // Direccion Exacta\n"; 
@@ -249,20 +286,23 @@ class GolampiCompiler extends GolampiBaseVisitor
         $this->output .= "    str x0, [sp, #-16]!         // PUSH valor a escribir\n";
 
         // Calcular índice plano
-        preg_match_all('/\[(\d+)\]/', $type, $matches);
+        $typeClean = str_starts_with($type, '*') ? substr($type, 1) : $type;
+        preg_match_all('/\[(\d+)\]/', $typeClean, $matches);
         $dims = $matches[1];
 
-        if (count($indices) === 1) {
-            $this->visit($indices[0]); 
-        } elseif (count($indices) === 2) {
-            $cols = $dims[1];
-            $this->visit($indices[0]); 
-            $this->output .= "    mov x1, #{$cols}\n";
-            $this->output .= "    mul x0, x0, x1\n";
-            $this->output .= "    str x0, [sp, #-16]!\n";
-            $this->visit($indices[1]); 
-            $this->output .= "    ldr x1, [sp], #16\n";
-            $this->output .= "    add x0, x1, x0\n";
+        // --- Metodo de Horner para N dimensiones ---
+        $this->visit($indices[0]); 
+        for ($k = 1; $k < count($indices); $k++) {
+            $this->output .= "    str x0, [sp, #-16]!         // PUSH acumulado\n";
+            $dimVal = $dims[$k];
+            $this->output .= "    mov x1, #{$dimVal}\n";
+            $this->output .= "    mul x0, x0, x1              // acumulado *= dimension_actual\n";
+            $this->output .= "    str x0, [sp]                // Update PUSH\n";
+            
+            $this->visit($indices[$k]);                 // x0 = nuevo indice
+            
+            $this->output .= "    ldr x1, [sp], #16           // POP acumulado\n";
+            $this->output .= "    add x0, x1, x0              // x0 = acumulado + nuevo\n";
         }
 
         $this->output .= "    mov x1, #8\n";
@@ -270,7 +310,8 @@ class GolampiCompiler extends GolampiBaseVisitor
 
         // Soporte para arreglos normales y pasados por puntero
         if (str_starts_with($type, '*')) {
-            $this->output .= "    ldr x1, [x29, #-{$baseOffset}]\n";
+            $this->output .= "    sub x9, x29, #{$baseOffset}\n";
+            $this->output .= "    ldr x1, [x9]                // Cargar la direccion apuntada\n";
         } else {
             $this->output .= "    sub x1, x29, #{$baseOffset}\n"; 
         }
@@ -331,7 +372,8 @@ class GolampiCompiler extends GolampiBaseVisitor
                         foreach ($flatExprs as $idx => $expr) {
                             $this->visit($expr); // El valor evaluado queda en x0
                             $elemOffset = $offset - ($idx * 8); 
-                            $this->output .= "    str x0, [x29, #-{$elemOffset}]  // Init array $name elem {$idx}\n";
+                            $this->output .= "    sub x9, x29, #{$elemOffset} // Calcular direccion\n";
+                            $this->output .= "    str x0, [x9]                // Init array $name elem {$idx}\n";
                         }
                     }
                 } else {
@@ -347,7 +389,8 @@ class GolampiCompiler extends GolampiBaseVisitor
                     } else {
                         $this->output .= "    mov x0, xzr\n";
                     }
-                    $this->output .= "    str x0, [x29, #-{$offset}]  // Almacenar en $name\n\n";
+                    $this->output .= "    sub x9, x29, #{$offset}\n";
+                    $this->output .= "    str x0, [x9]                // Almacenar en $name\n\n";
                 }
             } catch (Exception $e) {
                 $this->addError($e->getMessage(), $line, $col);
@@ -380,7 +423,8 @@ class GolampiCompiler extends GolampiBaseVisitor
             $this->currentEnv->declare($name, "const_" . $type, 8, $line, $col, $visualValue);
             
             $offset = $this->currentEnv->getSymbol($name)['offset'];
-            $this->output .= "    str x0, [x29, #-{$offset}]  // Declarar constante $name\n\n";
+            $this->output .= "    sub x9, x29, #{$offset}\n";
+            $this->output .= "    str x0, [x9]                // Declarar constante $name\n";
 
         } catch (Exception $e) {
             $this->addError($e->getMessage(), $line, $col);
@@ -400,12 +444,18 @@ class GolampiCompiler extends GolampiBaseVisitor
         if ($isMultiReturn) {
             $this->visit($exprs[0]); 
         } else {
-            foreach ($exprs as $expr) {
-                $this->visit($expr);
-                $this->output .= "    str x0, [sp, #-16]!         // PUSH temp\n";
+            foreach ($exprs as $i => $expr) {
+                $type = $this->getExprType($expr);
+                if (!str_contains($type, '[')) {
+                    $this->visit($expr);
+                    $this->output .= "    str x0, [sp, #-16]!         // PUSH temp\n";
+                }
             }
             for ($i = count($exprs) - 1; $i >= 0; $i--) {
-                $this->output .= "    ldr x{$i}, [sp], #16        // POP a x{$i}\n";
+                $type = $this->getExprType($exprs[$i]);
+                if (!str_contains($type, '[')) {
+                    $this->output .= "    ldr x{$i}, [sp], #16        // POP a x{$i}\n";
+                }
             }
         }
 
@@ -415,11 +465,53 @@ class GolampiCompiler extends GolampiBaseVisitor
             $col  = $idNode->getSymbol()->getCharPositionInLine();
             
             try {
-                $type = (str_contains($name, 'exito') || str_contains($name, 'flag')) ? 'bool' : 'int32'; 
-                $this->currentEnv->declare($name, $type, 8, $line, $col, '...');
+                $expr = $exprs[$i];
+                $type = $this->getExprType($expr); 
+                
+                preg_match_all('/\[(\d+)\]/', $type, $matches);
+                $isArray = !empty($matches[1]);
+                $totalElements = 1;
+                if ($isArray) {
+                    foreach ($matches[1] as $dim) $totalElements *= (int)$dim;
+                }
+                $sizeInBytes = $isArray ? ($totalElements * 8) : 8;
+
+                $this->currentEnv->declare($name, $type, $sizeInBytes, $line, $col, '...');
                 $offset = $this->currentEnv->getSymbol($name)['offset'];
                 
-                $this->output .= "    str x{$i}, [x29, #-{$offset}]  // Asignar x{$i} a $name\n";
+                if ($isArray) {
+                    $textExpr = $expr->getText();
+                    
+                    if (str_starts_with($textExpr, '{') || str_starts_with($textExpr, '[')) {
+                        $flatExprs = [];
+                        $this->flattenArrayValues($expr, $flatExprs);
+                        foreach ($flatExprs as $idx => $elemExpr) {
+                            $this->visit($elemExpr); 
+                            $elemOffset = $offset - ($idx * 8); 
+                            $this->output .= "    sub x9, x29, #{$elemOffset}\n";
+                            $this->output .= "    str x0, [x9]                // Init elem {$idx}\n";
+                        }
+                    } else {
+                        $this->visit($expr); 
+                        $lblCopy = $this->nextLabel('L_CPY_ARR_');
+                        $lblDone = $this->nextLabel('L_CPY_DONE_');
+                        
+                        $this->output .= "    mov x1, x0                  // x1 = Direccion origen\n";
+                        $this->output .= "    sub x2, x29, #{$offset}     // x2 = Direccion destino (base)\n";
+                        $this->output .= "    ldr x3, ={$totalElements}   // x3 = Cantidad de elementos\n";
+                        
+                        $this->output .= "{$lblCopy}:\n";
+                        $this->output .= "    cbz x3, {$lblDone}\n";
+                        $this->output .= "    ldr x4, [x1], #8            // Leer de origen y avanzar\n";
+                        $this->output .= "    str x4, [x2], #8            // Escribir en destino y avanzar\n";
+                        $this->output .= "    sub x3, x3, #1\n";
+                        $this->output .= "    b {$lblCopy}\n";
+                        $this->output .= "{$lblDone}:\n";
+                    }
+                } else {
+                    $this->output .= "    sub x9, x29, #{$offset}\n";
+                    $this->output .= "    str x{$i}, [x9]             // Asignar x{$i} a $name\n";
+                }
             } catch (Exception $e) {
                 $this->addError($e->getMessage(), $line, $col);
             }
@@ -459,7 +551,14 @@ class GolampiCompiler extends GolampiBaseVisitor
             }
 
             $offset = $sym['offset'];
-            $this->output .= "    str x0, [x29, #-{$offset}]  // Asignar a $name\n";
+            
+            $this->output .= "    sub x9, x29, #{$offset}\n";
+            
+            if (str_starts_with($symType, '*')) {
+                $this->output .= "    ldr x9, [x9]                // Obtener direccion original\n";
+            }
+            
+            $this->output .= "    str x0, [x9]                // Asignar el valor\n";
         } catch (Exception $e) {
             $this->addError("Variable $name no declarada.", $line, 0);
         }
@@ -479,7 +578,8 @@ class GolampiCompiler extends GolampiBaseVisitor
             $this->visit($ctx->expression());
             $this->output .= "    str x0, [sp, #-16]!         // PUSH operando derecho\n";
             
-            $this->output .= "    ldr x0, [x29, #-{$offset}]  // Leer $name actual\n";
+            $this->output .= "    sub x9, x29, #{$offset}     // Calcular direccion segura\n";
+            $this->output .= "    ldr x0, [x9]                // Leer $name actual\n";
             $this->output .= "    ldr x1, [sp], #16           // POP operando derecho a x1\n";
 
             if ($type === 'string' && $op === '+=') {
@@ -510,18 +610,34 @@ class GolampiCompiler extends GolampiBaseVisitor
                 $this->output .= "    adrp x0, concat_buffer      // x0 apunta al resultado\n";
                 $this->output .= "    add x0, x0, :lo12:concat_buffer\n";
             } else {
-                $this->output .= "    // --- Operacion $op ---\n";
-                if ($op === '+=') $this->output .= "    add x0, x0, x1\n";
-                if ($op === '-=') $this->output .= "    sub x0, x0, x1\n";
-                if ($op === '*=') $this->output .= "    mul x0, x0, x1\n";
-                if ($op === '/=') $this->output .= "    sdiv x0, x0, x1\n";
-                if ($op === '%=') {
-                    $this->output .= "    sdiv x2, x0, x1\n";
-                    $this->output .= "    msub x0, x2, x1, x0\n";
+                $this->output .= "    // --- Operacion Asignacion ---\n";
+                $type = $this->currentEnv->getSymbol($name)['type'];
+                
+                if ($type === 'string' && $op === '+=') {
+                } elseif (str_contains($type, 'float32')) {
+                    $this->output .= "    // --- Operacion Asignacion Flotante $op ---\n";
+                    $this->output .= "    fmov s0, w0                 // Izquierdo a s0\n";
+                    $this->output .= "    fmov s1, w1                 // Derecho a s1\n";
+                    if ($op === '+=') $this->output .= "    fadd s0, s0, s1\n";
+                    if ($op === '-=') $this->output .= "    fsub s0, s0, s1\n";
+                    if ($op === '*=') $this->output .= "    fmul s0, s0, s1\n";
+                    if ($op === '/=') $this->output .= "    fdiv s0, s0, s1\n";
+                    $this->output .= "    fmov w0, s0                 // Resultado a x0\n";
+                } else {
+                    $this->output .= "    // --- Operacion Entera $op ---\n";
+                    if ($op === '+=') $this->output .= "    add x0, x0, x1\n";
+                    if ($op === '-=') $this->output .= "    sub x0, x0, x1\n";
+                    if ($op === '*=') $this->output .= "    mul x0, x0, x1\n";
+                    if ($op === '/=') $this->output .= "    sdiv x0, x0, x1\n";
+                    if ($op === '%=') {
+                        $this->output .= "    sdiv x2, x0, x1\n";
+                        $this->output .= "    msub x0, x2, x1, x0\n";
+                    }
                 }
             }
 
-            $this->output .= "    str x0, [x29, #-{$offset}]  // Guardar en $name\n\n";
+            $this->output .= "    sub x9, x29, #{$offset}     // Calcular direccion segura\n";
+            $this->output .= "    str x0, [x9]                // Guardar en $name\n\n";
 
         } catch (Exception $e) {
             $this->addError("Variable $name no declarada.", $line, 0);
@@ -529,13 +645,37 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
-    public function visitExprId($ctx): mixed
+    // ──────────────────────────────────────────────
+    // LECTURA DE VARIABLES
+    // ──────────────────────────────────────────────
+    public function visitExprId($ctx): mixed 
     {
-        $name = $ctx->ID()->getText();
+        $name = $ctx->getText();
         try {
-            $offset = $this->currentEnv->getSymbol($name)['offset'];
-            $this->output .= "    ldr x0, [x29, #-{$offset}]  // Leer $name\n"; 
-        } catch (Exception $e) {
+            $sym = $this->currentEnv->getSymbol($name);
+            $offset = $sym['offset'];
+            $type = $sym['type'];
+            
+            if (str_contains($type, '[')) {
+                $this->output .= "    sub x9, x29, #{$offset}\n";
+                if (str_starts_with($type, '*')) {
+                    $this->output .= "    ldr x0, [x9]                // Leer direccion (parametro)\n";
+                } else {
+                    $this->output .= "    mov x0, x9                  // Devolver direccion base (local)\n";
+                }
+            } else {
+                $this->output .= "    sub x9, x29, #{$offset}     // Calcular direccion\n";
+                $this->output .= "    ldr x0, [x9]                // Leer valor a x0\n";
+                
+                if (str_starts_with($type, '*')) {
+                    $lblSkip = $this->nextLabel('L_SKIP_DEREF_');
+                    $this->output .= "    cbz x0, {$lblSkip}          // Evitar SegFault si es nil\n";
+                    $this->output .= "    ldr x0, [x0]                // Leer el valor apuntado\n";
+                    $this->output .= "{$lblSkip}:\n";
+                }
+            }
+            
+        } catch (\Exception $e) {
             $this->addError("Variable $name no declarada.");
         }
         return null;
@@ -547,6 +687,11 @@ class GolampiCompiler extends GolampiBaseVisitor
 
         if ($ctx->ENTERO()) {
             $this->output .= "    ldr x0, ={$text}            // Cargar entero\n";
+        } elseif ($ctx->DECIMAL()) {
+            $floatVal = floatval($text);
+            $binary = pack('f', $floatVal);
+            $intVal = unpack('V', $binary)[1];
+            $this->output .= "    ldr x0, ={$intVal}          // Cargar flotante\n";
         } elseif ($ctx->BOOL_LIT()) {
             $val = ($text === 'true') ? 1 : 0;
             $this->output .= "    mov x0, #{$val}             // Cargar bool\n";
@@ -577,7 +722,7 @@ class GolampiCompiler extends GolampiBaseVisitor
         if ($leftText === 'nil' || $rightText === 'nil') {
             $line = $ctx->start->getLine();
             $this->addError("Operación matemática inválida involucrando 'nil'.", $line, 0);
-            return null; // Abortar generación de ensamblador para esta suma
+            return null; // Abortar generación de ensamblador 
         }
 
         $this->visit($ctx->expression(0)); 
@@ -589,7 +734,16 @@ class GolampiCompiler extends GolampiBaseVisitor
         $op = $ctx->getChild(1)->getText();
         $type = $this->getExprType($ctx);
 
-        if ($type === 'string' && $op === '+') {
+        if (str_contains($type, 'float32')) {
+            $this->output .= "    fmov s1, w1                 // Pasar op. izquierdo a FPU\n";
+            $this->output .= "    fmov s0, w0                 // Pasar op. derecho a FPU\n";
+            if ($op === '+') {
+                $this->output .= "    fadd s0, s1, s0             // Suma flotante\n";
+            } elseif ($op === '-') {
+                $this->output .= "    fsub s0, s1, s0             // Resta flotante\n";
+            }
+            $this->output .= "    fmov w0, s0                 // Regresar resultado a x0\n";
+        } elseif ($type === 'string' && $op === '+') {
             $lblCpy1 = $this->nextLabel('L_CPY1_');
             $lblDone1 = $this->nextLabel('L_CPY1_DONE_');
             $lblCpy2 = $this->nextLabel('L_CPY2_');
@@ -645,13 +799,27 @@ class GolampiCompiler extends GolampiBaseVisitor
         $this->output .= "    ldr x1, [sp], #16\n";
         
         $op = $ctx->getChild(1)->getText();
-        if ($op === '*') {
-            $this->output .= "    mul x0, x1, x0              // Multiplicar\n"; 
-        } elseif ($op === '/') {
-            $this->output .= "    sdiv x0, x1, x0             // Dividir\n"; 
-        } elseif ($op === '%') {
-            $this->output .= "    sdiv x2, x1, x0\n"; 
-            $this->output .= "    msub x0, x2, x0, x1         // Modulo\n"; 
+        $type = $this->getExprType($ctx);
+
+        if (str_contains($type, 'float32')) {
+            $this->output .= "    fmov s1, w1                 // Pasar op. izquierdo a FPU\n";
+            $this->output .= "    fmov s0, w0                 // Pasar op. derecho a FPU\n";
+            if ($op === '*') {
+                $this->output .= "    fmul s0, s1, s0             // Multiplicacion flotante\n";
+            } elseif ($op === '/') {
+                $this->output .= "    fdiv s0, s1, s0             // Division flotante\n";
+            }
+            $this->output .= "    fmov w0, s0                 // Regresar resultado a x0\n";
+        } else {
+            // Operaciones enteras
+            if ($op === '*') {
+                $this->output .= "    mul x0, x1, x0              // Multiplicar\n";
+            } elseif ($op === '/') {
+                $this->output .= "    sdiv x0, x1, x0             // Dividir\n";
+            } elseif ($op === '%') {
+                $this->output .= "    sdiv x2, x1, x0\n";
+                $this->output .= "    msub x0, x2, x0, x1         // Modulo\n";
+            }
         }
         return null;
     }
@@ -663,9 +831,17 @@ class GolampiCompiler extends GolampiBaseVisitor
         $this->visit($ctx->expression(1));
         $this->output .= "    ldr x1, [sp], #16\n";
         
-        $this->output .= "    cmp x1, x0                  // Comparar x1 y x0\n";
-        
+        $type = $this->getExprType($ctx->expression(0));
         $op = $ctx->getChild(1)->getText();
+        
+        if (str_contains($type, 'float32')) {
+            $this->output .= "    fmov s1, w1\n";
+            $this->output .= "    fmov s0, w0\n";
+            $this->output .= "    fcmp s1, s0                 // Comparar flotantes\n";
+        } else {
+            $this->output .= "    cmp x1, x0                  // Comparar enteros\n";
+        }
+        
         $cond = match($op) {
             '<' => 'lt', '<=' => 'le', '>' => 'gt', '>=' => 'ge'
         };
@@ -687,26 +863,33 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
+    // ──────────────────────────────────────────────
+    // SENTENCIA IF / ELSE IF / ELSE
+    // ──────────────────────────────────────────────
     public function visitIfStmt($ctx): mixed
     {
         $lblElse = $this->nextLabel('L_ELSE_');
         $lblEnd  = $this->nextLabel('L_ENDIF_');
 
-        $this->visit($ctx->expression()); 
-        $this->output .= "    cmp x0, #1                  // Verificar if (true)\n";
-        $this->output .= "    b.ne {$lblElse}             // Si es falso, ir a else\n"; 
-        
-        $this->visitBlock($ctx->block(0)); 
-        $this->output .= "    b {$lblEnd}                 // Terminar if\n";
-        
+        $this->visit($ctx->expression());
+        $this->output .= "    cmp x0, #1                  // Evaluar condicion IF\n";
+        $this->output .= "    b.ne {$lblElse}             // Si es falso, saltar al ELSE\n";
+
+        $this->visit($ctx->block(0));
+        $this->output .= "    b {$lblEnd}                 // Salir del IF\n";
+
         $this->output .= "{$lblElse}:\n";
-        if ($ctx->ifStmt()) {
-            $this->visitIfStmt($ctx->ifStmt()); 
-        } elseif ($ctx->block(1)) {
-            $this->visitBlock($ctx->block(1));  
+        
+        if ($ctx->ELSE()) {
+            if ($ctx->ifStmt()) {
+                $this->visit($ctx->ifStmt());
+            } elseif ($ctx->block(1)) {
+                $this->visit($ctx->block(1));
+            }
         }
 
         $this->output .= "{$lblEnd}:\n";
+        
         return null;
     }
 
@@ -784,13 +967,19 @@ class GolampiCompiler extends GolampiBaseVisitor
         
         try {
             $offset = $this->currentEnv->getSymbol($name)['offset'];
-            $this->output .= "    ldr x0, [x29, #-{$offset}]\n";
+            
+            $this->output .= "    sub x9, x29, #{$offset}     // Calcular direccion segura\n";
+            
+            $this->output .= "    ldr x0, [x9]                // Cargar valor en x0\n";
+            
             if ($op === '++') {
                 $this->output .= "    add x0, x0, #1\n"; 
             } else {
                 $this->output .= "    sub x0, x0, #1\n"; 
             }
-            $this->output .= "    str x0, [x29, #-{$offset}]\n";
+            
+            $this->output .= "    str x0, [x9]                // Guardar valor modificado\n";
+            
         } catch (Exception $e) {}
         return null;
     }
@@ -808,16 +997,80 @@ class GolampiCompiler extends GolampiBaseVisitor
 
             // Iterar sobre cada argumento enviado a fmt.Println
             foreach ($args as $index => $expr) {
+                // Detectar y manejar nil especialmente
+                $exprText = $expr->getText();
+                if ($exprText === 'nil' || $exprText === 'nil==nil') {
+                    $this->output .= "    // --- Imprimir nil ---\n";
+                    $this->output .= "    mov w2, #60                 // '<'\n";
+                    $this->output .= "    sub sp, sp, #16\n";
+                    $this->output .= "    strb w2, [sp]\n";
+                    $this->output .= "    mov w2, #110                // 'n'\n";
+                    $this->output .= "    strb w2, [sp, #1]\n";
+                    $this->output .= "    mov w2, #105                // 'i'\n";
+                    $this->output .= "    strb w2, [sp, #2]\n";
+                    $this->output .= "    mov w2, #108                // 'l'\n";
+                    $this->output .= "    strb w2, [sp, #3]\n";
+                    $this->output .= "    mov w2, #62                 // '>'\n";
+                    $this->output .= "    strb w2, [sp, #4]\n";
+                    $this->output .= "    mov x0, #1\n";
+                    $this->output .= "    mov x1, sp\n";
+                    $this->output .= "    mov x2, #5\n";
+                    $this->output .= "    mov x8, #64\n";
+                    $this->output .= "    svc #0\n";
+                    $this->output .= "    add sp, sp, #16\n\n";
+                    
+                    if ($index < $totalArgs - 1) {
+                        $this->output .= "    // --- Imprimir Espacio Separador ---\n";
+                        $this->output .= "    mov w2, #32                 // ASCII del espacio\n";
+                        $this->output .= "    sub sp, sp, #16\n";
+                        $this->output .= "    strb w2, [sp]\n";
+                        $this->output .= "    mov x0, #1\n";
+                        $this->output .= "    mov x1, sp\n";
+                        $this->output .= "    mov x2, #1\n";
+                        $this->output .= "    mov x8, #64\n";
+                        $this->output .= "    svc #0\n";
+                        $this->output .= "    add sp, sp, #16\n\n";
+                    }
+                    continue;
+                }
+                
                 $this->visit($expr); 
                 $type = $this->getExprType($expr);
 
-                if ($type === 'string') {
+                if ($type === 'bool') {
+                    $lblFalse = $this->nextLabel('L_BOOL_F_');
+                    $lblEnd   = $this->nextLabel('L_BOOL_E_');
+                    
+                    $this->output .= "    cmp x0, #0\n";
+                    $this->output .= "    b.eq {$lblFalse}\n";
+                    // Imprimir 'true'
+                    $this->output .= "    mov w2, #116\n    strb w2, [sp, #-16]! // 't'\n"; 
+                    $this->output .= "    mov w2, #114\n    strb w2, [sp, #1]    // 'r'\n";
+                    $this->output .= "    mov w2, #117\n    strb w2, [sp, #2]    // 'u'\n";
+                    $this->output .= "    mov w2, #101\n    strb w2, [sp, #3]    // 'e'\n";
+                    $this->output .= "    mov x0, #1\n    mov x1, sp\n    mov x2, #4\n    mov x8, #64\n    svc #0\n";
+                    $this->output .= "    add sp, sp, #16\n";
+                    $this->output .= "    b {$lblEnd}\n";
+                    
+                    $this->output .= "{$lblFalse}:\n";
+                    // Imprimir 'false'
+                    $this->output .= "    mov w2, #102\n    strb w2, [sp, #-16]! // 'f'\n"; 
+                    $this->output .= "    mov w2, #97\n     strb w2, [sp, #1]    // 'a'\n";
+                    $this->output .= "    mov w2, #108\n    strb w2, [sp, #2]    // 'l'\n";
+                    $this->output .= "    mov w2, #115\n    strb w2, [sp, #3]    // 's'\n";
+                    $this->output .= "    mov w2, #101\n    strb w2, [sp, #4]    // 'e'\n";
+                    $this->output .= "    mov x0, #1\n    mov x1, sp\n    mov x2, #5\n    mov x8, #64\n    svc #0\n";
+                    $this->output .= "    add sp, sp, #16\n";
+                    $this->output .= "{$lblEnd}:\n";
+
+                } elseif ($type === 'string') {
                     $lblLoop = $this->nextLabel('L_STRLEN_');
                     $lblDone = $this->nextLabel('L_STRLEN_DONE_');
                     
                     $this->output .= "    // --- Imprimir String ---\n";
                     $this->output .= "    mov x1, x0                  // Puntero al string\n";
                     $this->output .= "    mov x2, #0                  // Contador de longitud\n";
+                    $this->output .= "    cbz x1, {$lblDone}          // Si es null, no imprimir nada\n";
                     $this->output .= "{$lblLoop}:\n";
                     $this->output .= "    ldrb w3, [x1, x2]           // Leer byte actual\n";
                     $this->output .= "    cbz w3, {$lblDone}          // Si es nulo, terminar\n";
@@ -829,38 +1082,167 @@ class GolampiCompiler extends GolampiBaseVisitor
                     $this->output .= "    mov x8, #64                 // syscall write\n";
                     $this->output .= "    svc #0\n\n";
 
-                } else {
-                    $lblConvLoop = $this->nextLabel('L_ITOA_LOOP_');
-                    $lblPrint    = $this->nextLabel('L_ITOA_PRINT_');
-
-                    $this->output .= "    // --- Imprimir Entero ---\n";
+                } elseif (str_contains($type, 'float32')) {
+                    $lblBase = $this->nextLabel('L_FTOA_');
+                    $lblFracLoop = $this->nextLabel('L_FRAC_LOOP_');
+                    $lblDone = $this->nextLabel('L_FRAC_DONE_');
+                    
+                    $this->output .= "    // --- Imprimir Float32 (Preciso) ---\n";
+                    $this->output .= "    fmov s0, w0                 // Pasar bits crudos a la FPU\n";
+                    
+                    $this->output .= "    fcvtzs w0, s0               // Convertir a int con signo\n";
+                    $this->output .= "    sxtw x0, w0                 // ¡MAGIA! Extender signo a 64 bits para negativos\n";
+                    
                     $this->output .= "    sub sp, sp, #32\n";
                     $this->output .= "    mov x1, sp                  // Puntero al inicio del buffer\n";
                     $this->output .= "    add x1, x1, #31             // Apuntar al final (sin salto)\n";
                     
+                    // Manejo del signo negativo
+                    $this->output .= "    mov x7, #0                  // x7 = flag negativo\n";
+                    $this->output .= "    cmp x0, #0\n";
+                    $this->output .= "    b.ge {$lblBase}_POS\n";
+                    $this->output .= "    neg x0, x0                  // Hacerlo positivo temporalmente\n";
+                    $this->output .= "    mov x7, #1                  // Marcar flag negativo\n";
+                    $this->output .= "{$lblBase}_POS:\n";
+
                     $this->output .= "    mov x2, x0                  // Copiar el numero a x2\n";
                     $this->output .= "    mov x3, #10                 // Divisor = 10\n";
                     $this->output .= "    mov x4, #0                  // Contador de digitos\n";
 
-                    $lblNotZero = $this->nextLabel('L_NOT_ZERO_');
-                    $this->output .= "    cbnz x2, {$lblNotZero}\n";
+                    $this->output .= "    cbnz x2, {$lblBase}_NOT_ZERO\n";
                     $this->output .= "    mov w5, #48                 // '0'\n";
                     $this->output .= "    strb w5, [x1], #-1          // Guardar y retroceder puntero\n";
                     $this->output .= "    mov x4, #1\n";
-                    $this->output .= "    b {$lblPrint}\n";
+                    $this->output .= "    b {$lblBase}_INT_PRINT\n";
 
-                    $this->output .= "{$lblNotZero}:\n";
-                    $this->output .= "{$lblConvLoop}:\n";
-                    $this->output .= "    cbz x2, {$lblPrint}         // Terminar si el cociente es 0\n";
+                    $this->output .= "{$lblBase}_NOT_ZERO:\n";
+                    $this->output .= "{$lblBase}_INT_LOOP:\n";
+                    $this->output .= "    cbz x2, {$lblBase}_INT_SIGN // Si es 0, ir a poner el signo\n";
                     $this->output .= "    udiv x5, x2, x3             // x5 = x2 / 10\n";
                     $this->output .= "    msub x6, x5, x3, x2         // x6 = x2 - (x5 * 10)\n";
                     $this->output .= "    add w6, w6, #48             // Convertir a ASCII\n";
                     $this->output .= "    strb w6, [x1], #-1          // Guardar char y retroceder\n";
                     $this->output .= "    mov x2, x5                  // x2 = cociente\n";
                     $this->output .= "    add x4, x4, #1              // contador++\n";
-                    $this->output .= "    b {$lblConvLoop}\n";
+                    $this->output .= "    b {$lblBase}_INT_LOOP\n";
 
-                    $this->output .= "{$lblPrint}:\n";
+                    $this->output .= "{$lblBase}_INT_SIGN:\n";
+                    $this->output .= "    cmp x7, #1                  // ¿Era negativo?\n";
+                    $this->output .= "    b.ne {$lblBase}_INT_PRINT\n";
+                    $this->output .= "    mov w5, #45                 // ASCII del '-'\n";
+                    $this->output .= "    strb w5, [x1], #-1\n";
+                    $this->output .= "    add x4, x4, #1\n";
+
+                    $this->output .= "{$lblBase}_INT_PRINT:\n";
+                    $this->output .= "    add x1, x1, #1              // Ajustar el puntero\n";
+                    $this->output .= "    mov x2, x4                  // Longitud = solo los digitos\n";
+                    
+                    $this->output .= "    mov x0, #1                  // stdout\n";
+                    $this->output .= "    mov x8, #64                 // syscall write\n";
+                    $this->output .= "    svc #0\n";
+                    
+                    $this->output .= "    add sp, sp, #32             // Liberar buffer del stack\n";
+                    
+                    $this->output .= "    // --- Calcular parte fraccionaria ---\n";
+                    $this->output .= "    fcvtzs w0, s0               // Recuperar la parte entera\n";
+                    $this->output .= "    scvtf s1, w0                // Convertir entero de vuelta a float\n";
+                    $this->output .= "    fsub s2, s0, s1             // Restar para obtener solo la fraccion\n";
+                    $this->output .= "    fabs s2, s2                 // Valor absoluto\n";
+                    
+                    $this->output .= "    ldr w1, =981668463          // Epsilon (Tolerancia)\n";
+                    $this->output .= "    fmov s5, w1\n";
+                    $this->output .= "    fcmp s2, s5\n";
+                    $this->output .= "    b.lt {$lblDone}             // Si es < 0.00001, NO imprimir punto ni decimales\n";
+                    
+                    $this->output .= "    // --- Imprimir punto decimal ---\n";
+                    $this->output .= "    mov w2, #46                 // ASCII del '.' \n";
+                    $this->output .= "    strb w2, [sp, #-16]!\n";
+                    $this->output .= "    mov x0, #1\n";
+                    $this->output .= "    mov x1, sp\n";
+                    $this->output .= "    mov x2, #1\n";
+                    $this->output .= "    mov x8, #64\n";
+                    $this->output .= "    svc #0\n";
+                    $this->output .= "    add sp, sp, #16\n";
+
+                    $this->output .= "    // --- Imprimir digitos fraccionarios ---\n";
+                    $this->output .= "    mov x4, #5                  // Maximo de iteraciones (5 decimales)\n";
+                    $this->output .= "    ldr w1, =1092616192         // Representacion de 10.0 en float32\n";
+                    $this->output .= "    fmov s3, w1                 // Multiplicador (10.0)\n";
+                    
+                    $this->output .= "{$lblFracLoop}:\n";
+                    $this->output .= "    cbz x4, {$lblDone}          // Break si llegamos al limite\n";
+                    
+                    $this->output .= "    fmul s2, s2, s3             // frac = frac * 10.0\n";
+                    $this->output .= "    fcvtzs w0, s2               // Extraer el digito a entero (x0)\n";
+                    
+                    $this->output .= "    // ¡AQUÍ ESTÁ LA MAGIA! Restamos la fracción ANTES de imprimir\n";
+                    $this->output .= "    scvtf s4, w0                // Digito a float\n";
+                    $this->output .= "    fsub s2, s2, s4             // frac = frac - digito\n";
+                    
+                    $this->output .= "    // Ahora sí, imprimimos el dígito\n";
+                    $this->output .= "    add w2, w0, #48             // Convertir a ASCII\n";
+                    $this->output .= "    strb w2, [sp, #-16]!\n";
+                    $this->output .= "    mov x0, #1\n";
+                    $this->output .= "    mov x1, sp\n";
+                    $this->output .= "    mov x2, #1\n";
+                    $this->output .= "    mov x8, #64\n";
+                    $this->output .= "    svc #0                      // ¡Esto destruye w0! Pero ya no nos importa.\n";
+                    $this->output .= "    add sp, sp, #16\n";
+                    
+                    $this->output .= "    // Revisar si ya terminamos con los decimales reales\n";
+                    $this->output .= "    fcmp s2, s5                 // Comparar remanente con Epsilon\n";
+                    $this->output .= "    b.lt {$lblDone}             // Si es casi 0, romper el ciclo\n";
+                    
+                    $this->output .= "    sub x4, x4, #1              // contador--\n";
+                    $this->output .= "    b {$lblFracLoop}\n";
+                    
+                    $this->output .= "{$lblDone}:\n";
+
+                } else {
+                    $lblBase = $this->nextLabel('L_ITOA_');
+
+                    $this->output .= "    // --- Imprimir Entero ---\n";
+                    $this->output .= "    sub sp, sp, #32\n";
+                    $this->output .= "    mov x1, sp                  // Puntero al inicio del buffer\n";
+                    $this->output .= "    add x1, x1, #31             // Apuntar al final (sin salto)\n";
+                    
+                    // Manejo del signo negativo
+                    $this->output .= "    mov x7, #0                  // x7 = flag negativo\n";
+                    $this->output .= "    cmp x0, #0\n";
+                    $this->output .= "    b.ge {$lblBase}_POS\n";
+                    $this->output .= "    neg x0, x0                  // Hacerlo positivo temporalmente\n";
+                    $this->output .= "    mov x7, #1                  // Marcar flag negativo\n";
+                    $this->output .= "{$lblBase}_POS:\n";
+
+                    $this->output .= "    mov x2, x0                  // Copiar el numero a x2\n";
+                    $this->output .= "    mov x3, #10                 // Divisor = 10\n";
+                    $this->output .= "    mov x4, #0                  // Contador de digitos\n";
+
+                    $this->output .= "    cbnz x2, {$lblBase}_NOT_ZERO\n";
+                    $this->output .= "    mov w5, #48                 // '0'\n";
+                    $this->output .= "    strb w5, [x1], #-1          // Guardar y retroceder puntero\n";
+                    $this->output .= "    mov x4, #1\n";
+                    $this->output .= "    b {$lblBase}_PRINT\n";
+
+                    $this->output .= "{$lblBase}_NOT_ZERO:\n";
+                    $this->output .= "{$lblBase}_LOOP:\n";
+                    $this->output .= "    cbz x2, {$lblBase}_SIGN     // Si es 0, ir a poner el signo\n";
+                    $this->output .= "    udiv x5, x2, x3             // x5 = x2 / 10\n";
+                    $this->output .= "    msub x6, x5, x3, x2         // x6 = x2 - (x5 * 10)\n";
+                    $this->output .= "    add w6, w6, #48             // Convertir a ASCII\n";
+                    $this->output .= "    strb w6, [x1], #-1          // Guardar char y retroceder\n";
+                    $this->output .= "    mov x2, x5                  // x2 = cociente\n";
+                    $this->output .= "    add x4, x4, #1              // contador++\n";
+                    $this->output .= "    b {$lblBase}_LOOP\n";
+
+                    $this->output .= "{$lblBase}_SIGN:\n";
+                    $this->output .= "    cmp x7, #1                  // ¿Era negativo?\n";
+                    $this->output .= "    b.ne {$lblBase}_PRINT\n";
+                    $this->output .= "    mov w5, #45                 // ASCII del '-'\n";
+                    $this->output .= "    strb w5, [x1], #-1\n";
+                    $this->output .= "    add x4, x4, #1\n";
+
+                    $this->output .= "{$lblBase}_PRINT:\n";
                     $this->output .= "    add x1, x1, #1              // Ajustar el puntero\n";
                     $this->output .= "    mov x2, x4                  // Longitud = solo los digitos\n";
                     
@@ -871,7 +1253,6 @@ class GolampiCompiler extends GolampiBaseVisitor
                     $this->output .= "    add sp, sp, #32             // Liberar buffer del stack\n\n";
                 }
 
-                // Imprimir espacio en blanco si no es el último argumento
                 if ($index < $totalArgs - 1) {
                     $this->output .= "    // --- Imprimir Espacio Separador ---\n";
                     $this->output .= "    mov w2, #32                 // ASCII del espacio\n";
@@ -887,7 +1268,7 @@ class GolampiCompiler extends GolampiBaseVisitor
             }
         }
         
-        //Al finalizar de imprimir todo, siempre agregamos un salto de línea 
+        //Al finalizar de imprimir todo
         $this->output .= "    // --- Salto de linea final ---\n";
         $this->output .= "    adrp x1, newline\n";
         $this->output .= "    add x1, x1, :lo12:newline\n";
@@ -905,6 +1286,35 @@ class GolampiCompiler extends GolampiBaseVisitor
             $exprs = $ctx->valores()->expression();
             foreach ($exprs as $expr) {
                 $this->visit($expr);
+                $type = $this->getExprType($expr);
+                
+                // Si estamos retornando un arreglo, copiarlo al buffer seguro
+                if (str_contains($type, '[')) {
+                    $lblCpy = $this->nextLabel('L_RET_CPY_');
+                    $lblDone = $this->nextLabel('L_RET_DONE_');
+                    preg_match_all('/\[(\d+)\]/', $type, $matches);
+                    $totElems = 1;
+                    foreach ($matches[1] as $d) $totElems *= (int)$d;
+                    
+                    $this->output .= "    // --- Copiar arreglo a zona segura ---\n";
+                    $this->output .= "    mov x1, x0                  // Origen (local)\n";
+                    $this->output .= "    adrp x2, concat_buffer      // Usar tu buffer global como rescate\n";
+                    $this->output .= "    add x2, x2, :lo12:concat_buffer\n";
+                    $this->output .= "    ldr x3, ={$totElems}\n";
+                    
+                    $this->output .= "{$lblCpy}:\n";
+                    $this->output .= "    cbz x3, {$lblDone}\n";
+                    $this->output .= "    ldr x4, [x1], #8\n";
+                    $this->output .= "    str x4, [x2], #8\n";
+                    $this->output .= "    sub x3, x3, #1\n";
+                    $this->output .= "    b {$lblCpy}\n";
+                    $this->output .= "{$lblDone}:\n";
+                    
+                    // Devolver el puntero de la zona segura
+                    $this->output .= "    adrp x0, concat_buffer\n";
+                    $this->output .= "    add x0, x0, :lo12:concat_buffer\n";
+                }
+                
                 $this->output .= "    str x0, [sp, #-16]!         // PUSH valor de retorno\n";
             }
             
@@ -962,7 +1372,7 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
-    // Leer el valor apuntado por un puntero (*precio)
+    // Leer el valor apuntado por un puntero 
     public function visitExprDeref($ctx): mixed 
     {
         $this->visit($ctx->expression());
@@ -992,8 +1402,8 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
-   // ──────────────────────────────────────────────
-    // FUNCIONES BUILT-IN 
+    // ──────────────────────────────────────────────
+    // FUNCIONES NATIVAS (Built-ins)
     // ──────────────────────────────────────────────
     public function visitExprBuiltIn($ctx): mixed
     {
@@ -1001,7 +1411,15 @@ class GolampiCompiler extends GolampiBaseVisitor
         
         if ($funcName === 'len') {
             $expr = $ctx->valores()->expression(0);
-            $type = $this->getExprType($expr);
+            $exprText = $expr->getText();
+            $type = '';
+            
+            try {
+                $sym = $this->currentEnv->getSymbol($exprText);
+                $type = $sym['type'];
+            } catch (\Exception $e) {
+                $type = $this->getExprType($expr);
+            }
             
             // Si es un arreglo 
             if (str_contains($type, '[')) {

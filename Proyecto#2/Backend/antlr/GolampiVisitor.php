@@ -422,6 +422,16 @@ interface GolampiVisitor extends ParseTreeVisitor
 	public function visitArrayAssignment(Context\ArrayAssignmentContext $context);
 
 	/**
+	 * Visit a parse tree produced by the `ExprTernary` labeled alternative
+	 * in {@see GolampiParser::expression()}.
+	 *
+	 * @param Context\ExprTernaryContext $context The parse tree.
+	 *
+	 * @return mixed The visitor result.
+	 */
+	public function visitExprTernary(Context\ExprTernaryContext $context);
+
+	/**
 	 * Visit a parse tree produced by the `ExprAddr` labeled alternative
 	 * in {@see GolampiParser::expression()}.
 	 *
@@ -450,6 +460,16 @@ interface GolampiVisitor extends ParseTreeVisitor
 	 * @return mixed The visitor result.
 	 */
 	public function visitExprBuiltIn(Context\ExprBuiltInContext $context);
+
+	/**
+	 * Visit a parse tree produced by the `ExprPipe` labeled alternative
+	 * in {@see GolampiParser::expression()}.
+	 *
+	 * @param Context\ExprPipeContext $context The parse tree.
+	 *
+	 * @return mixed The visitor result.
+	 */
+	public function visitExprPipe(Context\ExprPipeContext $context);
 
 	/**
 	 * Visit a parse tree produced by the `ExprParenthesis` labeled alternative

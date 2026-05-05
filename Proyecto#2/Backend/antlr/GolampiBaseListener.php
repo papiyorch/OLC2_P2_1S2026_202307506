@@ -580,6 +580,19 @@ class GolampiBaseListener implements GolampiListener
 	 *
 	 * The default implementation does nothing.
 	 */
+	public function enterExprTernary(Context\ExprTernaryContext $context): void {}
+
+	/**
+	 * {@inheritdoc}
+	 *
+	 * The default implementation does nothing.
+	 */
+	public function exitExprTernary(Context\ExprTernaryContext $context): void {}
+	/**
+	 * {@inheritdoc}
+	 *
+	 * The default implementation does nothing.
+	 */
 	public function enterExprAddr(Context\ExprAddrContext $context): void {}
 
 	/**
@@ -614,6 +627,19 @@ class GolampiBaseListener implements GolampiListener
 	 * The default implementation does nothing.
 	 */
 	public function exitExprBuiltIn(Context\ExprBuiltInContext $context): void {}
+	/**
+	 * {@inheritdoc}
+	 *
+	 * The default implementation does nothing.
+	 */
+	public function enterExprPipe(Context\ExprPipeContext $context): void {}
+
+	/**
+	 * {@inheritdoc}
+	 *
+	 * The default implementation does nothing.
+	 */
+	public function exitExprPipe(Context\ExprPipeContext $context): void {}
 	/**
 	 * {@inheritdoc}
 	 *

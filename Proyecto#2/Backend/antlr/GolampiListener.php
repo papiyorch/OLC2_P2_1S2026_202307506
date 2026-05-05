@@ -488,6 +488,18 @@ interface GolampiListener extends ParseTreeListener {
 	 */
 	public function exitArrayAssignment(Context\ArrayAssignmentContext $context): void;
 	/**
+	 * Enter a parse tree produced by the `ExprTernary`
+	 * labeled alternative in {@see GolampiParser::expression()}.
+	 * @param $context The parse tree.
+	 */
+	public function enterExprTernary(Context\ExprTernaryContext $context): void;
+	/**
+	 * Exit a parse tree produced by the `ExprTernary` labeled alternative
+	 * in {@see GolampiParser::expression()}.
+	 * @param $context The parse tree.
+	 */
+	public function exitExprTernary(Context\ExprTernaryContext $context): void;
+	/**
 	 * Enter a parse tree produced by the `ExprAddr`
 	 * labeled alternative in {@see GolampiParser::expression()}.
 	 * @param $context The parse tree.
@@ -523,6 +535,18 @@ interface GolampiListener extends ParseTreeListener {
 	 * @param $context The parse tree.
 	 */
 	public function exitExprBuiltIn(Context\ExprBuiltInContext $context): void;
+	/**
+	 * Enter a parse tree produced by the `ExprPipe`
+	 * labeled alternative in {@see GolampiParser::expression()}.
+	 * @param $context The parse tree.
+	 */
+	public function enterExprPipe(Context\ExprPipeContext $context): void;
+	/**
+	 * Exit a parse tree produced by the `ExprPipe` labeled alternative
+	 * in {@see GolampiParser::expression()}.
+	 * @param $context The parse tree.
+	 */
+	public function exitExprPipe(Context\ExprPipeContext $context): void;
 	/**
 	 * Enter a parse tree produced by the `ExprParenthesis`
 	 * labeled alternative in {@see GolampiParser::expression()}.

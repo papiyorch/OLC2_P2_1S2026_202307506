@@ -59,6 +59,16 @@ class GolampiCompiler extends GolampiBaseVisitor
         if ($exprCtx === null) return 'int32';
         if (is_array($exprCtx)) $exprCtx = $exprCtx[0];
         $text = $exprCtx->getText();
+
+        // --- INFERENCIA PARA TERNARIO (? :) ---
+        if (method_exists($exprCtx, 'expression')) {
+            $exprs = $exprCtx->expression();
+            // Validamos que sea un arreglo y tenga exactamente 3 expresiones
+            if (is_array($exprs) && count($exprs) === 3) {
+                // Retornamos el tipo del lado "verdadero"
+                return $this->getExprType($exprs[1]);
+            }
+        }
         
         // 1. Funciones Nativas, Strings y Booleanos
         if (str_contains($text, '"')) return 'string';
@@ -67,9 +77,10 @@ class GolampiCompiler extends GolampiBaseVisitor
         if (str_starts_with($text, 'now(')) return 'string';
         if (str_starts_with($text, 'typeOf(')) return 'string';
         
-        if ($text === 'true' || $text === 'false' || str_contains($text, '==') || str_contains($text, '!=') || str_contains($text, '<') || str_contains($text, '>') || str_contains($text, '&&') || str_contains($text, '||') || str_starts_with($text, '!')) return 'bool';
+        $textNoPipe = str_replace('|>', '', $text); 
+        if ($textNoPipe === 'true' || $textNoPipe === 'false' || str_contains($textNoPipe, '==') || str_contains($textNoPipe, '!=') || str_contains($textNoPipe, '<') || str_contains($textNoPipe, '>') || str_contains($textNoPipe, '&&') || str_contains($textNoPipe, '||') || str_starts_with($textNoPipe, '!')) return 'bool';
         
-        // 2. Arreglos literales 
+        // 2. Arreglos literales (ej. [2][2]int32)
         if (preg_match('/^(\[\d+\])+(int32|float32|string|bool|rune)/', $text, $matches)) {
             return $matches[0]; 
         }
@@ -87,17 +98,19 @@ class GolampiCompiler extends GolampiBaseVisitor
                     $sym = $this->currentEnv->getSymbol($word);
                     $t = $sym['type'];
                     
+                    // --- LIMPIEZA DE PUNTEROS MULTIPLES ---
                     $t = ltrim($t, '*'); 
                     
                     if (str_contains($t, 'float32')) $foundType = 'float32';
                     if (str_contains($t, 'string')) $foundType = 'string';
                     if (str_contains($t, 'bool')) $foundType = 'bool'; 
                     if (str_contains($t, 'rune')) $foundType = 'rune';
-                    if (str_contains($t, '[')) $foundType = $t; 
+                    if (str_contains($t, '[')) $foundType = $t; // Arrastrar matriz si existe
                 } catch (\Exception $e) {}
             }
         }
         
+        // 5. BLINDAJE MATEMATICO
         if (str_contains($text, '[') || str_contains($text, '+') || str_contains($text, '-') || str_contains($text, '*') || str_contains($text, '/')) {
             if (!preg_match('/^(\[\d+\])+/', $text)) {
                 $foundType = preg_replace('/\[\d+\]/', '', $foundType);
@@ -1546,6 +1559,31 @@ class GolampiCompiler extends GolampiBaseVisitor
         return null;
     }
 
+    public function visitExprTernary($ctx): mixed
+    {
+        $lblFalse = $this->nextLabel('L_TERN_F_');
+        $lblEnd   = $this->nextLabel('L_TERN_E_');
+
+        $this->output .= "    // --- Inicio Operador Ternario ---\n";
+        
+        $this->visit($ctx->expression(0)); 
+        $this->output .= "    cmp x0, #0                  // ¿La condicion es false/0?\n";
+        $this->output .= "    b.eq {$lblFalse}            // Si es falso, saltar a evaluar la opcion 2\n";
+
+        $this->output .= "    // --- Lado True ---\n";
+        $this->visit($ctx->expression(1)); 
+        $this->output .= "    b {$lblEnd}                 // Cortocircuito: saltar al final\n";
+
+        $this->output .= "{$lblFalse}:\n";
+        $this->output .= "    // --- Lado False ---\n";
+        $this->visit($ctx->expression(2)); 
+
+        $this->output .= "{$lblEnd}:\n";
+        $this->output .= "    // --- Fin Operador Ternario ---\n";
+        
+        return null;
+    }
+
     // ──────────────────────────────────────────────
     // OPERADORES UNARIOS (! y -)
     // ──────────────────────────────────────────────
@@ -1611,6 +1649,14 @@ class GolampiCompiler extends GolampiBaseVisitor
         
         $this->output .= "{$lblEnd}:\n";
         $this->output .= "    add sp, sp, #16             // POP valor del switch\n\n";
+        return null;
+    }
+
+    public function visitExprPipe($ctx): mixed 
+    { 
+        $this->output .= "    // --- Inicio Operador Pipe (|>) ---\n";
+        $this->visit($ctx->expression(0)); 
+        $this->visit($ctx->expression(1));
         return null;
     }
 

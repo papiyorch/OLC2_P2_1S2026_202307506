@@ -133,6 +133,8 @@ expression
     |   expression (EQ | NEQ) expression                        # ExprEquality
     |   expression AND expression                               # ExprAnd
     |   expression OR expression                                # ExprOr
+    |   expression PIPE expression                              # ExprPipe
+    |   expression QUESTION expression COLON expression         # ExprTernary
     |   (LEN | NOW | SUBSTR | TYPEOF) LPAREN valores? RPAREN    # ExprBuiltIn
     |   ID                                                      # ExprId
     |   literal                                                 # ExprLiteral
@@ -238,6 +240,7 @@ AND         :   '&&'    ;
 OR          :   '||'    ;
 NOT         :   '!'     ;
 AMP         :   '&'     ;
+PIPE        :   '|>'    ;
 
 LPAREN      :   '('     ;
 RPAREN      :   ')'     ;
@@ -249,6 +252,7 @@ SEMI        :   ';'     ;
 COLON       :   ':'     ;
 COMMA       :   ','     ;
 DOT         :   '.'     ;
+QUESTION    :   '?'     ;
 
 ID
     :   [a-zA-Z_] [a-zA-Z_0-9]*
